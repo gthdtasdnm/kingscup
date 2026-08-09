@@ -15,6 +15,13 @@ const PUBLIC = new URL("./public/", import.meta.url);
 const MAX_PLAYERS = 10;
 const MIN_PLAYERS = 2;
 
+// Bedenkzeit je Zug. Wer dran ist und nichts tut, haelt sonst die ganze Runde
+// an - und am Tisch merkt niemand, woran es liegt. Nach Ablauf rueckt der Zug
+// weiter; eine gezogene Karte gilt dann als gelesen.
+// Ueber die Umgebung verstellbar, damit die Probe nicht anderthalb Minuten
+// warten muss.
+const ZUG_MS = Number(Deno.env.get("ZUG_MS") ?? 90_000);
+
 const {
   rooms, browsing,
   createRoom, clearTimers, anwesende,
@@ -26,7 +33,7 @@ const {
   minPlayers: MIN_PLAYERS,
   einstellungen: { modus: "frei" },   // frei | trink
   raumfelder: () => ({
-    deck: [], reihe: [], amZug: null, karte: null, koenige: 0, gezogen: 0,
+    deck: [], reihe: [], amZug: null, karte: null, koenige: 0, gezogen: 0, frist: 0,
   }),
   beimBeitritt: (room) => { if (room.phase === "playing") pushRunde(room); },
   nachVerlassen: (room, player) => {
@@ -54,6 +61,7 @@ function startGame(room) {
   room.koenige = 0;
   room.gezogen = 0;
   for (const p of room.players.values()) p.ready = false;
+  neueFrist(room);
   pushState(room);
   pushRunde(room);
   pushRoomList();
@@ -65,10 +73,37 @@ function naechster(room, von) {
   return room.reihe[(i < 0 ? 0 : i + 1) % room.reihe.length];
 }
 
+/**
+ * Die Bedenkzeit neu aufziehen. Laeuft sie ab, passiert genau das, was der
+ * Spieler haette tun sollen: liegt eine Karte offen, wird weitergegeben; liegt
+ * keine da, wird der Zug uebersprungen.
+ */
+function neueFrist(room) {
+  clearTimers(room);
+  if (room.phase !== "playing" || !room.reihe.length) {
+    room.frist = 0;
+    return;
+  }
+  room.frist = Date.now() + ZUG_MS;
+  const id = setTimeout(() => {
+    room.timers.delete(id);
+    if (room.phase !== "playing") return;
+    if (room.karte) {
+      if (room.koenige >= 4 || !room.deck.length) return finishGame(room);
+      room.karte = null;
+    }
+    room.amZug = naechster(room, room.amZug);
+    neueFrist(room);
+    pushRunde(room);
+  }, ZUG_MS);
+  room.timers.add(id);
+}
+
 function weiterWennWeg(room) {
   const p = room.players.get(room.amZug);
   if (p?.connected) return;
   room.amZug = naechster(room, room.amZug);
+  neueFrist(room);
   pushRunde(room);
 }
 
@@ -84,6 +119,7 @@ function pushRunde(room) {
     titel: regel?.titel ?? null,
     text: regel ? (room.settings.modus === "trink" ? regel.trink : regel.frei) : null,
     rest: room.deck.length,
+    frist: room.frist,
     koenige: room.koenige,
     gezogen: room.gezogen,
     modus: room.settings.modus,
@@ -95,6 +131,7 @@ function pushRunde(room) {
 
 function finishGame(room) {
   clearTimers(room);
+  room.frist = 0;
   room.phase = "final";
   for (const p of room.players.values()) p.ready = false;
   broadcast(room, {
@@ -119,6 +156,7 @@ function backToLobby(room) {
   room.karte = null;
   room.koenige = 0;
   room.gezogen = 0;
+  room.frist = 0;
   for (const p of room.players.values()) p.ready = false;
   pushState(room);
 }
@@ -222,6 +260,8 @@ function handle(ws, msg) {
       room.karte = room.deck.pop();
       room.gezogen++;
       if (room.karte.r === "K") room.koenige++;
+      // Wer gezogen hat, bekommt die volle Bedenkzeit zum Vorlesen.
+      neueFrist(room);
       pushRunde(room);
       break;
     }
@@ -231,6 +271,7 @@ function handle(ws, msg) {
       if (room.koenige >= 4 || !room.deck.length) return finishGame(room);
       room.karte = null;
       room.amZug = naechster(room, player.id);
+      neueFrist(room);
       pushRunde(room);
       break;
     }

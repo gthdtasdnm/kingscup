@@ -11,9 +11,23 @@ const HILFE = [
 
 const rot = (k) => k.f === "♥" || k.f === "♦";
 
+// Bedenkzeit: ohne sichtbare Uhr wirkt der Zugwechsel nach Ablauf wie ein
+// Fehler. Mit Uhr ist er das, was er ist – eine Frist.
+let uhrZiel = 0;
+
+function uhr() {
+  const u = $("uhr");
+  if (!u) return;
+  const rest = Math.max(0, Math.ceil((uhrZiel - Date.now()) / 1000));
+  u.textContent = uhrZiel && rest <= 30 ? rest + "s" : "";
+}
+setInterval(uhr, 500);
+
 function zeichneSpiel(m) {
   zeige("game");
-  $("tbLinks").innerHTML = `Karten <strong>${m.rest}</strong>`;
+  $("tbLinks").innerHTML = `Karten <strong>${m.rest}</strong> <span id="uhr"></span>`;
+  uhrZiel = m.frist || 0;
+  uhr();
   $("tbTag").textContent = m.modus === "trink" ? "Trinkmodus" : "trinkfrei";
 
   const b = $("buehne");

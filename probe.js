@@ -48,9 +48,9 @@ console.log("ok  in keiner trinkfreien Regel steht ein Schluck");
 
 // --- Jetzt der Server -------------------------------------------------------
 
-function client(name) {
+function clientAn(url, name) {
   const c = {
-    name, ws: new WebSocket(URL_WS), you: null, room: null, runde: null,
+    name, ws: new WebSocket(url), you: null, room: null, runde: null,
     final: null, fehler: [],
   };
   c.ws.onmessage = (ev) => {
@@ -65,6 +65,8 @@ function client(name) {
   c.offen = new Promise((res) => { c.ws.onopen = res; });
   return c;
 }
+
+const client = (name) => clientAn(URL_WS, name);
 
 const warte = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -211,6 +213,61 @@ geht.send({ t: "leave" });
 await bis(() => bleibt[0].runde.spieler.length === 2, "einer ist raus");
 muss(bleibt[0].runde.amZug !== geht.you, `Der Zug hängt an ${geht.name} – weg, aber noch dran`);
 console.log(`ok  ${geht.name} geht mitten im eigenen Zug – die Runde läuft weiter`);
+
+// --- Die Bedenkzeit --------------------------------------------------------
+
+// Wer am Zug ist und nichts tut, hielt die Runde frueher an. Jetzt laeuft eine
+// Frist. Neunzig Sekunden mag hier niemand abwarten, deshalb startet die Probe
+// dafuer einen eigenen Server mit kurzer Frist auf einem freien Port. Laeuft
+// die Probe gegen live (WS_URL gesetzt), faellt der Teil aus - dort steht die
+// Frist auf ihrem echten Wert.
+
+if (Deno.env.get("WS_URL")) {
+  console.log("    (Bedenkzeit nicht geprueft: gegen live laesst sie sich nicht kuerzen)");
+} else {
+  const kurz = 1500;
+  const testPort = "9" + PORT.slice(1);
+  const dienst = new Deno.Command(Deno.execPath(), {
+    args: ["run", "--allow-net", "--allow-read", "--allow-env", "--allow-sys", "server.js"],
+    env: { ...Deno.env.toObject(), PORT: testPort, ZUG_MS: String(kurz) },
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+
+  try {
+    await warte(900);
+    const url = `ws://127.0.0.1:${testPort}/ws`;
+    const P = clientAn(url, "Pia"), Q = clientAn(url, "Quin");
+    await Promise.all([P.offen, Q.offen]);
+
+    P.send({ t: "create", name: "Pia", isPublic: false });
+    await bis(() => P.room, "Testraum angelegt");
+    Q.send({ t: "join", code: P.room.code, name: "Quin" });
+    await bis(() => P.room.players.length === 2, "zwei im Testraum");
+    Q.send({ t: "ready", value: true });
+    await bis(() => P.room.players.every((p) => p.ready || p.host), "bereit im Testraum");
+    P.send({ t: "start" });
+    await bis(() => P.runde && !P.final, "Testpartie läuft");
+
+    const frist = P.runde.frist;
+    muss(frist > Date.now(), "Es läuft keine Bedenkzeit");
+    muss(frist - Date.now() <= kurz + 500, "Die Bedenkzeit ist länger als eingestellt");
+
+    const dranVor = P.runde.amZug;
+    // Erst ohne Karte: der Zug wird uebersprungen.
+    // Und jetzt tut niemand etwas.
+    await bis(() => P.runde.amZug !== dranVor, "der Zug rückt nach Ablauf weiter", 6000);
+    muss(P.runde.frist > Date.now(), "Nach dem Zugwechsel läuft keine neue Frist");
+    muss(P.runde.karte === null, "Nach dem übersprungenen Zug liegt eine Karte offen");
+    console.log("ok  wer nichts tut, gibt nach Ablauf der Bedenkzeit ab");
+
+    P.ws.close();
+    Q.ws.close();
+  } finally {
+    dienst.kill();
+    await dienst.status;
+  }
+}
 
 if (alleC.some((c) => c.fehler.length)) {
   throw new Error("Fehlermeldungen: " + JSON.stringify(alleC.map((c) => c.fehler)));
