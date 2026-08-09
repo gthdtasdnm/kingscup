@@ -214,6 +214,10 @@ function handle(ws, msg) {
 
     case "ziehen": {
       if (room.phase !== "playing" || room.amZug !== player.id) break;
+      // Liegt schon eine Karte offen, wird nicht noch eine gezogen. Sonst
+      // verschluckt ein Doppeltipp oder ein hängender Knopf eine Regel, die
+      // niemand gesehen hat – und beim vierten König sogar das Spielende.
+      if (room.karte) break;
       if (!room.deck.length) return finishGame(room);
       room.karte = room.deck.pop();
       room.gezogen++;
